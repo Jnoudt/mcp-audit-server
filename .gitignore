@@ -1,0 +1,26 @@
+# Azure Functions / Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.python_packages/
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+
+# Local settings and secrets
+local.settings.json
+.env
+.env.*
+!.env.example
+
+# Editors / tooling
+.vscode/settings.json
+.idea/
+
+# Test and coverage output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

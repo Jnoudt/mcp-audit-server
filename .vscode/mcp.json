@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "mcp-audit-server": {
+      "type": "http",
+      "url": "http://localhost:7071/api/mcp"
+    }
+  }
+}

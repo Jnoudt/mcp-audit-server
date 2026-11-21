@@ -1,0 +1,168 @@
+name: Security and vulnerability checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: secops-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  free-security-checks:
+    name: Free dependency and code security checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install runtime and security tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run Ruff
+        run: ruff check function_app.py src tests
+
+      - name: Run pytest
+        run: python -m pytest -q
+
+      - name: Run Bandit
+        run: bandit -r function_app.py src -f json -o bandit-report.json
+
+      - name: Run pip-audit
+        run: pip-audit -r requirements.txt -r requirements-dev.txt --format json --output pip-audit-report.json
+
+      - name: Compile Python sources
+        run: python -m compileall -q function_app.py src tests
+
+      - name: Upload free scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-security-reports
+          path: |
+            bandit-report.json
+            pip-audit-report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  mend-sca:
+    name: Mend OSS/SCA
+    runs-on: ubuntu-latest
+    needs: free-security-checks
+    if: ${{ vars.MEND_ENABLED == 'true' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Validate Mend configuration
+        id: mend-config
+        env:
+          MEND_USERKEY: ${{ secrets.MEND_USERKEY || vars.MEND_USERKEY }}
+          MEND_PROJECT_TOKEN: ${{ secrets.MEND_PROJECT_TOKEN || vars.MEND_PROJECT_TOKEN }}
+        run: |
+          if [ -z "${MEND_USERKEY}" ] || [ -z "${MEND_PROJECT_TOKEN}" ]; then
+            echo "Mend configuration is incomplete; scan skipped."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Mend CLI
+        if: steps.mend-config.outputs.ready == 'true'
+        env:
+          MEND_USERKEY: ${{ secrets.MEND_USERKEY || vars.MEND_USERKEY }}
+          MEND_PROJECT_TOKEN: ${{ secrets.MEND_PROJECT_TOKEN || vars.MEND_PROJECT_TOKEN }}
+        run: |
+          python -m pip install -r requirements.txt
+          npx --yes whiteSource@latest
+
+      - name: Upload Mend artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mend-results
+          path: mend-results
+          if-no-files-found: warn
+          retention-days: 30
+
+  checkmarx:
+    name: Checkmarx one-tenant scan
+    runs-on: ubuntu-latest
+    needs: free-security-checks
+    if: ${{ vars.CX_ENABLED == 'true' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Checkmarx configuration
+        id: checkmarx-config
+        env:
+          CX_CLIENT_ID: ${{ secrets.CX_CLIENT_ID || vars.CX_CLIENT_ID }}
+          CX_CLIENT_SECRET: ${{ secrets.CX_CLIENT_SECRET }}
+          CX_TENANT: ${{ secrets.CX_TENANT || vars.CX_TENANT }}
+        run: |
+          if [ -z "${CX_CLIENT_ID}" ] || [ -z "${CX_CLIENT_SECRET}" ] || [ -z "${CX_TENANT}" ]; then
+            echo "Checkmarx configuration is incomplete; commercial scan skipped."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Checkmarx KICS or SAST
+        if: steps.checkmarx-config.outputs.ready == 'true'
+        env:
+          CX_CLIENT_ID: ${{ secrets.CX_CLIENT_ID }}
+          CX_CLIENT_SECRET: ${{ secrets.CX_CLIENT_SECRET }}
+          CX_TENANT: ${{ secrets.CX_TENANT }}
+          CX_BASE_URI: ${{ vars.CX_BASE_URI }}
+          CX_REGION: ${{ vars.CX_REGION }}
+        uses: checkmarx/ast-github-action@main
+        with:
+          project_name: mcp-audit-server
+          cx_tenant: ${{ secrets.CX_TENANT || vars.CX_TENANT }}
+          base_uri: ${{ vars.CX_BASE_URI }}
+          cx_client_id: ${{ secrets.CX_CLIENT_ID || vars.CX_CLIENT_ID }}
+          cx_client_secret: ${{ secrets.CX_CLIENT_SECRET }}
+          additional_params: --file-filter "!*.venv/**,!**/.venv/**,!**/__pycache__/**"
+
+      - name: Upload Checkmarx status notice
+        if: always()
+        run: |
+          mkdir -p cx-results
+          printf 'Checkmarx scan requested for mcp-audit-server.\n' > cx-results/README.txt
+
+      - name: Upload Checkmarx artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkmarx-results
+          path: cx-results
+          if-no-files-found: warn
+          retention-days: 30
