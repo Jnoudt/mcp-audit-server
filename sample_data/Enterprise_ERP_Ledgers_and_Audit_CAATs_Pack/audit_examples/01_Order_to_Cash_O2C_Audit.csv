@@ -1,0 +1,4 @@
+Audit_ID,Procedure,Standard,Target_Ledgers,CAATs_Analytics_Rule,Injected_Anomaly_Flag,Sample_Finding
+O2C-001,Revenue Cutoff Testing,ISA 540 / IFRS 15,"General Ledger, Accounts Receivable, Inventory",Filter postings between Dec 28 and Jan 05 where Shipping Date > Posting Date,CUTOFF_ERR_2026,"5 invoices dated Dec 31 shipped Jan 03; revenue overstated by ZAR 142,500."
+O2C-002,Duplicate Customer Billing & Credit Memo Check,ISA 315 / ISA 500,"Accounts Receivable, General Ledger","Group by Customer_ID, Amount, and Invoice_Date within 3 days",DUP_AR_INV,8 duplicate customer invoices identified across SAP and Dynamics 365.
+O2C-003,Expected Credit Loss (ECL) & Aging Stratification,IFRS 9 / ISA 540,Accounts Receivable,Recalculate days past due > 90 days and compare to allowance provision,OVERDUE_UNPROVIDED,12 accounts >120 days past due lacking 100% impairment provision.

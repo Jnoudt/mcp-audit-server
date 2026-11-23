@@ -2,21 +2,38 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import sys
 import time
 import uuid
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal
+from urllib.parse import unquote
 
 import azure.functions as func
 from pydantic import ValidationError
 
 sys.path.insert(0, ".")
 
+from src.ai_review import (
+    AIReviewConfigurationError,
+    AIReviewConsentError,
+    AIReviewError,
+    AIReviewProviderError,
+    ai_review_status,
+    request_ai_review,
+)
 from src.audit_store import create_audit_store
+from src.demo_store import (
+    DemoNotFoundError,
+    DemoStore,
+    DemoValidationError,
+    get_demo_store,
+)
 from src.schemas.models import (
     AuditRecord,
     ComplianceCheckRequest,
@@ -33,6 +50,15 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
 _AUDIT_STORE, _AUDIT_BACKEND = create_audit_store()
 _LOGGER = logging.getLogger("mcp-audit-server")
+_LOCAL_DEMO_AUTH_LEVEL = (
+    func.AuthLevel.ANONYMOUS
+    if (
+        os.getenv("RECONFLOW_LOCAL_DEMO", "").casefold() == "true"
+        and not os.getenv("WEBSITE_INSTANCE_ID")
+    )
+    or os.getenv("RECONFLOW_HOSTED_DEMO", "").casefold() == "true"
+    else func.AuthLevel.FUNCTION
+)
 
 
 class MCPError(Exception):
@@ -305,6 +331,10 @@ async def mcp(req: func.HttpRequest) -> func.HttpResponse:
             raise MCPError(-32600, "Invalid JSON-RPC request")
         response = await _handle_rpc(payload, trace_id)
         status_code = 200
+    except ValueError as exc:
+        _structured_log(trace_id, "rpc_parse_error", error_type=type(exc).__name__)
+        response = _rpc_error(None, trace_id, MCPError(-32700, "Parse error"))
+        status_code = 200
     except MCPError as exc:
         response = _rpc_error(payload.get("id") if isinstance(payload, dict) else None, trace_id, exc)
         status_code = 200
@@ -320,3 +350,322 @@ async def mcp(req: func.HttpRequest) -> func.HttpResponse:
         mimetype="application/json",
         headers={"x-correlation-id": trace_id},
     )
+
+
+def _demo_response(
+    payload: dict[str, Any],
+    status_code: int = 200,
+    trace_id: str | None = None,
+) -> func.HttpResponse:
+    headers = {"cache-control": "no-store"}
+    if trace_id:
+        headers["x-correlation-id"] = trace_id
+    return func.HttpResponse(
+        json.dumps(_json_safe(payload), separators=(",", ":")),
+        status_code=status_code,
+        mimetype="application/json",
+        headers=headers,
+    )
+
+
+def _local_demo_store() -> DemoStore:
+    local_demo = (
+        os.getenv("RECONFLOW_LOCAL_DEMO", "").casefold() == "true"
+        and not os.getenv("WEBSITE_INSTANCE_ID")
+    )
+    hosted_demo = (
+        os.getenv("RECONFLOW_HOSTED_DEMO", "").casefold() == "true"
+    )
+    if not (local_demo or hosted_demo):
+        raise DemoValidationError("The ReconFlow guest demo is unavailable.")
+    return get_demo_store()
+
+
+def _demo_error(exc: Exception, trace_id: str) -> func.HttpResponse:
+    if isinstance(exc, DemoNotFoundError):
+        return _demo_response({"error": str(exc)}, 404, trace_id)
+    if isinstance(exc, (DemoValidationError, ValueError)):
+        return _demo_response({"error": str(exc)}, 400, trace_id)
+    if isinstance(exc, AIReviewConfigurationError):
+        return _demo_response({"error": str(exc)}, 409, trace_id)
+    if isinstance(exc, AIReviewConsentError):
+        return _demo_response({"error": str(exc)}, 400, trace_id)
+    if isinstance(exc, AIReviewProviderError):
+        cause = exc.__cause__
+        provider_status = getattr(cause, "status_code", None)
+        if not isinstance(provider_status, int):
+            provider_status = None
+        _structured_log(
+            trace_id,
+            "demo_ai_provider_error",
+            error_type=type(exc).__name__,
+            reason_code=exc.reason_code,
+            cause_type=type(cause).__name__ if cause else None,
+            provider_status=provider_status,
+            finish_reason=exc.finish_reason,
+            prompt_tokens=exc.prompt_tokens,
+            completion_tokens=exc.completion_tokens,
+        )
+        if provider_status == 429:
+            return _demo_response(
+                {"error": "The Foundry model deployment is rate-limited. Retry after a short wait."},
+                429,
+                trace_id,
+            )
+        return _demo_response({"error": str(exc)}, 502, trace_id)
+    if isinstance(exc, AIReviewError):
+        return _demo_response({"error": str(exc)}, 400, trace_id)
+    _structured_log(trace_id, "demo_request_error", error_type=type(exc).__name__)
+    return _demo_response(
+        {"error": "The local demo request could not be completed.", "trace_id": trace_id},
+        500,
+        trace_id,
+    )
+
+
+@app.route(
+    route="demo/status",
+    methods=["GET"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_status(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    local_demo = (
+        os.getenv("RECONFLOW_LOCAL_DEMO", "").casefold() == "true"
+        and not os.getenv("WEBSITE_INSTANCE_ID")
+    )
+    hosted_demo = (
+        os.getenv("RECONFLOW_HOSTED_DEMO", "").casefold() == "true"
+    )
+    if not (local_demo or hosted_demo):
+        return _demo_response({"error": "The ReconFlow guest demo is unavailable."}, 404, trace_id)
+    return _demo_response(
+        {"enabled": True, "ai": ai_review_status(), "storage": "local SQLite + local files"},
+        trace_id=trace_id,
+    )
+
+
+@app.route(
+    route="demo/requests",
+    methods=["GET"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_list_requests(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    try:
+        store = _local_demo_store()
+        result = await asyncio.to_thread(store.list_requests)
+        return _demo_response({"requests": result}, trace_id=trace_id)
+    except (DemoNotFoundError, DemoValidationError, ValueError) as exc:
+        return _demo_error(exc, trace_id)
+
+
+@app.route(
+    route="demo/sample-files",
+    methods=["GET"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_sample_files(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    try:
+        service_id = req.params.get("serviceId", "")
+        store = _local_demo_store()
+        samples = await asyncio.to_thread(store.list_sample_files, service_id)
+        return _demo_response({"samples": samples}, trace_id=trace_id)
+    except (DemoNotFoundError, DemoValidationError, ValueError) as exc:
+        return _demo_error(exc, trace_id)
+
+
+@app.route(
+    route="demo/requests",
+    methods=["POST"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_create_request(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    try:
+        payload = req.get_json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("serviceId"), str):
+            raise DemoValidationError("Provide a supported serviceId.")
+        store = _local_demo_store()
+        result = await asyncio.to_thread(store.create_request, payload["serviceId"])
+        return _demo_response(result, 201, trace_id)
+    except ValueError as exc:
+        return _demo_error(exc, trace_id)
+    except (DemoNotFoundError, DemoValidationError) as exc:
+        return _demo_error(exc, trace_id)
+
+
+@app.route(
+    route="demo/requests/{request_id}",
+    methods=["GET"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_get_request(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    try:
+        store = _local_demo_store()
+        result = await asyncio.to_thread(store.get_request, req.route_params["request_id"])
+        return _demo_response(result, trace_id=trace_id)
+    except (DemoNotFoundError, DemoValidationError, ValueError) as exc:
+        return _demo_error(exc, trace_id)
+
+
+@app.route(
+    route="demo/requests/{request_id}/assessment",
+    methods=["PUT"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_save_assessment(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    try:
+        payload = req.get_json()
+        if not isinstance(payload, dict):
+            raise DemoValidationError("Assessment answers must be a JSON object.")
+        store = _local_demo_store()
+        result = await asyncio.to_thread(
+            store.save_assessment,
+            req.route_params["request_id"],
+            payload,
+        )
+        return _demo_response(result, trace_id=trace_id)
+    except (DemoNotFoundError, DemoValidationError, ValueError) as exc:
+        return _demo_error(exc, trace_id)
+
+
+@app.route(
+    route="demo/requests/{request_id}/uploads",
+    methods=["POST"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_upload_csv(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    try:
+        file_name = unquote(req.headers.get("x-file-name", ""))
+        source_system = req.headers.get("x-source-system", "Unspecified")
+        content = req.get_body()
+        store = _local_demo_store()
+        result = await asyncio.to_thread(
+            store.upload_csv,
+            req.route_params["request_id"],
+            file_name,
+            content,
+            source_system,
+        )
+        return _demo_response(result, 201, trace_id)
+    except (DemoNotFoundError, DemoValidationError, ValueError) as exc:
+        return _demo_error(exc, trace_id)
+
+
+@app.route(
+    route="demo/requests/{request_id}/samples",
+    methods=["POST"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_upload_sample(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    try:
+        payload = req.get_json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("sampleId"), str):
+            raise DemoValidationError("Provide a sampleId from the test-pack file list.")
+        store = _local_demo_store()
+        result = await asyncio.to_thread(
+            store.upload_sample,
+            req.route_params["request_id"],
+            payload["sampleId"],
+        )
+        return _demo_response(result, 201, trace_id)
+    except (DemoNotFoundError, DemoValidationError, ValueError) as exc:
+        return _demo_error(exc, trace_id)
+
+
+@app.route(
+    route="demo/requests/{request_id}/runs",
+    methods=["POST"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_run_audit(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    try:
+        store = _local_demo_store()
+        result = await asyncio.to_thread(store.run_audit, req.route_params["request_id"])
+        return _demo_response(result, 201, trace_id)
+    except (DemoNotFoundError, DemoValidationError, ValueError) as exc:
+        return _demo_error(exc, trace_id)
+
+
+@app.route(
+    route="demo/requests/{request_id}/runs/{run_id}/findings/{finding_id}/disposition",
+    methods=["POST"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_save_disposition(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    try:
+        payload = req.get_json()
+        if not isinstance(payload, dict):
+            raise DemoValidationError("Disposition must be a JSON object.")
+        store = _local_demo_store()
+        result = await asyncio.to_thread(
+            store.save_disposition,
+            req.route_params["request_id"],
+            req.route_params["run_id"],
+            req.route_params["finding_id"],
+            payload.get("disposition", ""),
+            payload.get("note", ""),
+        )
+        return _demo_response(result, trace_id=trace_id)
+    except (DemoNotFoundError, DemoValidationError, ValueError) as exc:
+        return _demo_error(exc, trace_id)
+
+
+@app.route(
+    route="demo/requests/{request_id}/ai-review",
+    methods=["POST"],
+    auth_level=_LOCAL_DEMO_AUTH_LEVEL,
+)
+async def demo_ai_review(req: func.HttpRequest) -> func.HttpResponse:
+    trace_id = req.headers.get("x-correlation-id") or str(uuid.uuid4())
+    try:
+        payload = req.get_json()
+        if not isinstance(payload, dict):
+            raise DemoValidationError("AI review request must be a JSON object.")
+        question = payload.get("question")
+        if not isinstance(question, str):
+            raise DemoValidationError("Provide a question for the AI reviewer.")
+        store = _local_demo_store()
+        request_record = await asyncio.to_thread(
+            store.get_request,
+            req.route_params["request_id"],
+        )
+        latest_run = request_record.get("latestRun")
+        if not isinstance(latest_run, dict):
+            raise DemoValidationError("Run the deterministic audit before requesting AI review.")
+        context = await asyncio.to_thread(
+            store.get_ai_context,
+            req.route_params["request_id"],
+            latest_run["id"],
+        )
+        history = context.pop("conversation", [])
+        ai_result = await asyncio.to_thread(
+            request_ai_review,
+            question,
+            context,
+            confirmed_send=payload.get("confirmSend") is True,
+            history=history,
+        )
+        result = await asyncio.to_thread(
+            store.record_ai_exchange,
+            req.route_params["request_id"],
+            latest_run["id"],
+            question,
+            ai_result.answer,
+            ai_result.model_deployment,
+            ai_result.prompt_tokens,
+            ai_result.completion_tokens,
+        )
+        return _demo_response(result, trace_id=trace_id)
+    except (DemoNotFoundError, DemoValidationError, ValueError) as exc:
+        return _demo_error(exc, trace_id)
+    except AIReviewError as exc:
+        return _demo_error(exc, trace_id)

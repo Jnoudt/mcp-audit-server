@@ -1,0 +1,4 @@
+Audit_ID,Procedure,Standard,Target_Ledgers,CAATs_Analytics_Rule,Injected_Anomaly_Flag,Sample_Finding
+R2R-001,Manual Journal Entry & Weekend/Holiday Posting Scan,ISA 240.32,General Ledger,"Filter manual doc types (SA/JE) posted on Saturdays, Sundays, or after 22:00",WEEKEND_MANUAL_JE,14 manual top-side adjustments posted on Sundays by senior admin accounts.
+R2R-002,Round-Sum & Reversing Entry Analysis,ISA 240 / ISA 520,General Ledger,"Identify journal lines ending in '000.00' above ZAR 100,000",ROUND_SUM_OUTLIER,9 round-sum accruals lacking supporting schedules.
+R2R-003,Bank Reconciliation & Cash Cut-off Verification,ISA 505 / IAS 7,"Cash/Bank, General Ledger",Match Cash/Bank subledger ending balances against GL Cash control accounts,UNRECONCILED_CASH_ITEM,Stale reconciling EFTs older than 60 days identified in bank ledger.

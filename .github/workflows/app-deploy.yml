@@ -3,6 +3,12 @@ name: Test and deploy MCP audit server
 on:
   push:
     branches: [main]
+    paths:
+      - "function_app.py"
+      - "host.json"
+      - "requirements.txt"
+      - "sample_data/**"
+      - "src/**"
   pull_request:
   workflow_dispatch:
 

@@ -77,7 +77,7 @@ class CosmosAuditStore(AuditStore):
         database = self._client.create_database_if_not_exists(id=database_name)
         self._container = database.create_container_if_not_exists(
             id=container_name,
-            partition_key=PartitionKey(path="/trace_id"),
+            partition_key=PartitionKey(path="/tenantId"),
         )
 
     async def write(self, record: dict[str, Any]) -> None:
@@ -124,7 +124,13 @@ class CosmosAuditStore(AuditStore):
         ])
 
         items = await asyncio.to_thread(
-            lambda: list(self._container.query_items(query=query, parameters=parameters)),
+            lambda: list(
+                self._container.query_items(
+                    query=query,
+                    parameters=parameters,
+                    partition_key=tenant_id,
+                )
+            ),
         )
 
         page = items[:limit]
@@ -136,8 +142,16 @@ class CosmosAuditStore(AuditStore):
 
 def create_audit_store() -> tuple[AuditStore, str]:
     endpoint = os.getenv("COSMOS_ENDPOINT")
-    database_name = os.getenv("COSMOS_DATABASE", "mcp-audit")
-    container_name = os.getenv("COSMOS_CONTAINER", "audit-records")
+    database_name = (
+        os.getenv("COSMOS_DATABASE_NAME")
+        or os.getenv("COSMOS_DATABASE")
+        or "mcp-audit"
+    )
+    container_name = (
+        os.getenv("COSMOS_CONTAINER_NAME")
+        or os.getenv("COSMOS_CONTAINER")
+        or "audit-records"
+    )
 
     if endpoint:
         return CosmosAuditStore(endpoint, database_name, container_name), "cosmos"

@@ -1,0 +1,4 @@
+Audit_ID,Procedure,Standard,Target_Ledgers,CAATs_Analytics_Rule,Injected_Anomaly_Flag,Sample_Finding
+P2P-001,Duplicate Vendor Invoice Detection,ISA 240 / ISA 330,"Accounts Payable, Cash/Bank",Exact match on Vendor_ID + Invoice_Ref or fuzzy match on Amount + Date,DUP_AP_INV,15 duplicate vendor invoices paid twice across ERP ledgers.
+P2P-002,Benford's Law First-Digit Anomaly Analysis,ISA 240 (Fraud Risk),"Accounts Payable, General Ledger","Chi-square test on leading digits (1-9) of expense amounts; flag clusters just below ZAR 50,000 approval limit",BENFORD_THRESHOLD_SPLIT,"Spike in leading digits '4' and '9' (ZAR 49,500 - 49,990) indicating split POs."
+P2P-003,Three-Way Match & Unrecorded Liabilities,ISA 500 / IAS 37,"Accounts Payable, Inventory, Cash/Bank",Match AP Invoice to GRN and PO; scan Jan bank disbursements for Dec goods,UNMATCHED_GRN_INV,10 vendor invoices posted without corresponding Goods Receipt Note.

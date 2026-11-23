@@ -1,4 +1,8 @@
 azure-functions==1.26.0
 azure-cosmos==4.17.1
 azure-identity==1.27.0
+openai>=1.99.0,<3.0.0
+pandas==2.2.3
+pyodbc==5.2.0
 pydantic==2.14.4
+SQLAlchemy==2.0.44

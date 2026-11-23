@@ -7,16 +7,42 @@ __pycache__/
 frontend/node_modules/
 frontend/dist/
 frontend/coverage/
+.azure/
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+!*.tfvars.json.example
+azd.env
+.env.*
+!.env.example
 
 # Local settings and secrets
 local.settings.json
 .env
 .env.*
 !.env.example
+.local/
+uploads/
+data/uploads/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+dump/
+backups/
 
 # Editors / tooling
 .vscode/settings.json
 .idea/
+.history/
+*.code-workspace
 
 # Test and coverage output
 .pytest_cache/
@@ -24,3 +50,28 @@ local.settings.json
 .ruff_cache/
 .coverage
 htmlcov/
+test-results/
+playwright-report/
+
+# Build, package, and temporary files
+dist/
+build/
+out/
+coverage/
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+Desktop.ini
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Local research, generated reports, and handoff notes; runtime fixtures live in sample_data/.
+docs/
+/ReconFlow logo.webp

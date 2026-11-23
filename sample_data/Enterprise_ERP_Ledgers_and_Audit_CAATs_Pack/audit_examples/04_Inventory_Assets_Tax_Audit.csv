@@ -1,0 +1,4 @@
+Audit_ID,Procedure,Standard,Target_Ledgers,CAATs_Analytics_Rule,Injected_Anomaly_Flag,Sample_Finding
+IAT-001,Negative Inventory & NRV Valuation Test,IAS 2 / ISA 501,"Inventory, General Ledger",Filter Qty_On_Hand < 0 or Unit_Cost > Selling_Price,NEG_INV_QTY,6 SKU locations displaying negative stock quantities due to unposted receipts.
+IAT-002,Fixed Asset Depreciation Recalculation & Ghost Assets,IAS 16 / ISA 540,"Fixed Assets, General Ledger",Recalculate (Cost - Residual) / Useful_Life and flag assets with Net Book Value < 0,DEPR_OVER_COST,7 assets where accumulated depreciation exceeds acquisition cost.
+IAT-003,VAT Output/Input Rate & Zero-Rated Compliance,SA VAT Act (15%) / IAS 12,"General Ledger, Accounts Receivable, Accounts Payable",Verify Tax_Amount / Net_Amount == 0.15 for standard-rated tax codes,VAT_RATE_MISMATCH,11 domestic transactions coded with incorrect VAT percentages.

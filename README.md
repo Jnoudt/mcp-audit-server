@@ -2,6 +2,11 @@
 
 A production-oriented Model Context Protocol (MCP) tool server implemented as an Azure Function, designed for deterministic financial and compliance operations, auditable execution, and tenant-safe retrieval.
 
+This repository also includes the local-first ReconFlow audit demo: a React/Vite workspace,
+Python Function API, deterministic CAATs engine, optional consent-gated Foundry review, and
+synthetic ERP fixtures in `sample_data/`. Infrastructure is maintained separately in
+`mcp-audit-infra`.
+
 ## Architecture
 
 ```mermaid
@@ -19,6 +24,20 @@ flowchart LR
 ```
 
 The HTTP endpoint implements MCP initialization and `tools/list`/`tools/call`. Tool operations use Pydantic v2 strict schemas and Python `Decimal` arithmetic. Azure storage and credentials are isolated behind `AuditStore` implementations.
+
+## ReconFlow demo workflows
+
+The demo UI currently has three executable, deterministic workflows: Journal Entry Analytics,
+Invoice Integrity Review, and Inventory & Fixed Asset Controls. The other catalog cards are
+workflow previews, not implemented services. The bundled fixture pack contains 36 synthetic
+ERP ledger CSVs, four audit examples, and a manifest. Local processing keeps uploads and
+review state in ignored `.local/` files and SQLite; Azure SQL has a schema, but application
+persistence to Azure SQL is not wired yet.
+
+The demo engine detects candidate exceptions; results are not audit opinions, fraud findings,
+or proof that a control failed. The optional Foundry adapter is separately consent-gated and
+receives a summary rather than raw ledger rows or planted ground-truth labels. AI is disabled
+by default.
 
 ## Tools
 
@@ -80,7 +99,11 @@ Cold starts can be reduced operationally by moving to a warmer plan, but this ch
 
 ## Local Development
 
-Use [docs/RUN_LOCALLY.md](docs/RUN_LOCALLY.md) for the complete Python security-check, local MCP server, and React frontend setup. Use [docs/PUSH_TO_GITHUB.md](docs/PUSH_TO_GITHUB.md) for repository-root, secret-readiness, remote, and GitHub Actions guidance.
+Use [LOCAL_DEMO_GUIDE.txt](LOCAL_DEMO_GUIDE.txt) to start the API and frontend, run the three
+sample workflows, or point the local UI at the existing Azure API. Use
+[PUSH_AND_DEPLOY_GUIDE.txt](PUSH_AND_DEPLOY_GUIDE.txt) for safe GitHub account, push, and
+deployment steps. [INTERVIEW_VIDEO_GUIDE.txt](INTERVIEW_VIDEO_GUIDE.txt) is a five-minute
+interview outline. The local `docs/` folder is intentionally gitignored.
 
 ## Cloud Deployment
 
@@ -101,13 +124,29 @@ The deployment workflow expects these repository variables:
 
 Configure Terraform or Azure policy to align the Function App runtime with Python 3.12. Configure federated credentials for the repository and branch/environment being used. The workflow uses `azure/login@v2` and `Azure/functions-action@v1` without publish-profile secrets.
 
+The app deployment workflow deploys the Function API from `main`. The
+`swa-deploy.yml` workflow builds and publishes the prebuilt React/Vite frontend to the
+existing Static Web App on changes to `frontend/` merged or pushed to `main`, or on a
+manual dispatch from `main`. It requires the GitHub Actions secret
+`AZURE_STATIC_WEB_APPS_API_TOKEN`; the optional repository variable
+`RECONFLOW_API_BASE_URL` defaults to the existing Function API URL. Never put the
+deployment token in source or logs. The workflow does not provision Azure resources.
+
+Existing demo resources in `rg-mcp-audit-dev` include a Function App, Static Web App,
+Azure SQL, Storage, Foundry, and Application Insights. The live Function uses managed
+identity for Foundry and Storage. The inspected resource group has no VNet/private
+endpoints; current public-endpoint demo calls work without VNet integration. The
+Terraform root is not reconciled with those live resources and is not ready to apply.
+
 Example Azure runtime settings:
 
 ```text
 COSMOS_ENDPOINT=<resource-specific-account-endpoint>
-COSMOS_DATABASE=mcp-audit
-COSMOS_CONTAINER=audit-records
+COSMOS_DATABASE_NAME=<database-name>
+COSMOS_CONTAINER_NAME=<container-name>
 ```
+
+The Cosmos container must use `/tenantId` as its partition key, matching the Terraform configuration. `COSMOS_DATABASE` and `COSMOS_CONTAINER` remain supported as legacy aliases for local setups.
 
 Do not configure Cosmos keys or connection strings. Grant the Function App managed identity the required Cosmos data-plane role and least-privilege Key Vault role separately.
 
